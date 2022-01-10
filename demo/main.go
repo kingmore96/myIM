@@ -26,4 +26,5 @@ func main() {
 	if err := root.Execute(); err != nil {
 		logrus.WithError(err).Fatal("Could not run command")
 	}
+	//test
 }
