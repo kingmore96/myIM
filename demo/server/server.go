@@ -1,13 +1,16 @@
 package server
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/gobwas/ws"
+	"github.com/gobwas/ws/wsutil"
 	"github.com/sirupsen/logrus"
 )
 
@@ -94,7 +97,11 @@ func (s *Server) delUser(user string) {
 
 func (s *Server) readLoop(user string, conn net.Conn) error {
 	for {
+		// 要求：客户端必须在指定时间10s内发送一条消息过来，可以是ping，也可以是正常数据包
+		_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+
 		frame, err := ws.ReadFrame(conn)
+		//如果超时或出错，则返回err，上层会断开客户端连接
 		if err != nil {
 			return err
 		}
@@ -110,6 +117,8 @@ func (s *Server) readLoop(user string, conn net.Conn) error {
 		// 接收文本帧内容
 		if frame.Header.OpCode == ws.OpText {
 			go s.handle(user, string(frame.Payload))
+		} else if frame.Header.OpCode == ws.OpBinary {
+			go s.handleBinary(user, frame.Payload)
 		}
 	}
 }
@@ -128,6 +137,33 @@ func (s *Server) handle(user string, message string) {
 		// 创建文本帧数据
 		f := ws.NewTextFrame([]byte(message))
 		err := ws.WriteFrame(conn, f)
+		if err != nil {
+			logrus.Errorf("write to %s failed, error: %v", user, err)
+		}
+	}
+}
+
+// command of message
+const (
+	CommandPing = 100
+	CommandPong = 101
+)
+
+//回复心跳pong
+func (s *Server) handleBinary(user string, message []byte) {
+	logrus.Infof("recv message %v from %s", message, user)
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	// handle ping request
+	i := 0
+	command := binary.BigEndian.Uint16(message[i : i+2])
+	i += 2
+	payloadLen := binary.BigEndian.Uint32(message[i : i+4])
+	logrus.Infof("command: %v payloadLen: %v", command, payloadLen)
+	if command == CommandPing {
+		u := s.users[user]
+		// return pong
+		err := wsutil.WriteServerBinary(u, []byte{0, CommandPong, 0, 0, 0, 0})
 		if err != nil {
 			logrus.Errorf("write to %s failed, error: %v", user, err)
 		}
